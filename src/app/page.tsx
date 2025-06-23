@@ -53,7 +53,7 @@ interface ChatMessage {
   ts?: number
   ts_iso?: string
   timestamp?: string
-  [key: string]: any // Allow any additional fields
+  [key: string]: string | number | boolean | undefined | object // Allow additional fields with specific types
 }
 
 interface AppSettings {
