@@ -620,9 +620,9 @@ Exported on: ${new Date().toLocaleString()}
               <div className="w-24 h-24 bg-gradient-to-br from-blue-500 via-indigo-600 to-purple-600 rounded-3xl flex items-center justify-center mx-auto mb-6 shadow-xl">
                 <FileText className="w-12 h-12 text-white" />
               </div>
-              <h2 className="text-3xl font-bold text-gray-900 mb-3">Chat Data Analyzer</h2>
+              <h2 className="text-3xl font-bold text-gray-900 mb-3">8x8 AuditTrail Conversations</h2>
               <p className="text-gray-600 mb-8 text-lg">
-                Upload your chat JSON file to explore and analyze conversations
+                Built by Jrz
               </p>
             </div>
 
@@ -701,7 +701,7 @@ Exported on: ${new Date().toLocaleString()}
         >
           <div className="flex items-center justify-between">
             <div className="flex items-center space-x-4">
-              <h1 className="text-2xl font-bold">Chat Analyzer</h1>
+              <h1 className="text-2xl font-bold">AuditTrail Conversations</h1>
               <Badge variant="secondary" className="bg-blue-100 text-blue-800">
                 {stats.totalConversations.toLocaleString()} conversations
               </Badge>
