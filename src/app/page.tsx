@@ -13,14 +13,12 @@ import {
   FileText,
   AlertCircle,
   X,
-  ArrowLeft,
   Download,
   Settings,
   Eye,
   Calendar,
   Clock,
   Hash,
-  Mail,
   User,
   RefreshCw,
 } from "lucide-react"
@@ -37,6 +35,7 @@ import { Progress } from "@/components/ui/progress"
 import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 
 interface ChatMessage {
   author_user_email?: string
@@ -53,7 +52,18 @@ interface ChatMessage {
   ts?: number
   ts_iso?: string
   timestamp?: string
-  [key: string]: string | number | boolean | undefined | object // Allow additional fields with specific types
+  [key: string]: string | number | boolean | undefined | object
+}
+
+interface ConversationGroup {
+  room_id: string
+  room_name: string
+  room_type: string
+  participants: string[]
+  messages: ChatMessage[]
+  latestMessage: ChatMessage
+  messageCount: number
+  latestTimestamp: string
 }
 
 interface AppSettings {
@@ -66,13 +76,13 @@ interface AppSettings {
 }
 
 // Virtual scrolling hook with improved performance
-function useVirtualScrolling(items: ChatMessage[], itemHeight: number, containerHeight: number, buffer = 5) {
+function useVirtualScrolling(items: ConversationGroup[], itemHeight: number, containerHeight: number, buffer = 5) {
   const [scrollTop, setScrollTop] = useState(0)
 
   const visibleStart = Math.max(0, Math.floor(scrollTop / itemHeight) - buffer)
   const visibleEnd = Math.min(items.length, Math.ceil((scrollTop + containerHeight) / itemHeight) + buffer)
 
-  const visibleItems = items.slice(visibleStart, visibleEnd).map((item: ChatMessage, index: number) => ({
+  const visibleItems = items.slice(visibleStart, visibleEnd).map((item: ConversationGroup, index: number) => ({
     ...item,
     index: visibleStart + index,
   }))
@@ -115,8 +125,8 @@ export default function ChatFilterApp() {
   const [searchTerm, setSearchTerm] = useState("")
   const [roomTypeFilter, setRoomTypeFilter] = useState<string>("")
   const [dateFilter, setDateFilter] = useState<string>("")
-  const [activeTab, setActiveTab] = useState("all")
-  const [selectedConversation, setSelectedConversation] = useState<ChatMessage | null>(null)
+  const [activeTab, setActiveTab] = useState("conversations")
+  const [selectedConversation, setSelectedConversation] = useState<ConversationGroup | null>(null)
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
   const [isPreviewOpen, setIsPreviewOpen] = useState(false)
@@ -156,6 +166,59 @@ export default function ChatFilterApp() {
   useEffect(() => {
     localStorage.setItem("chatFilterSettings", JSON.stringify(settings))
   }, [settings])
+
+  // Group messages by conversation/room
+  const conversationGroups = useMemo(() => {
+    const groups = new Map<string, ConversationGroup>()
+
+    chatData.forEach((message) => {
+      const roomId = message.room_id || message.room_name || "unknown"
+      const roomName = message.room_name || "Unknown Room"
+      const roomType = message.room_type || "unknown"
+
+      // Extract participant names
+      const participants = message.room_members?.map((member) => member.room_member_name) || [
+        message.author_user_name || "Unknown User",
+      ]
+
+      if (!groups.has(roomId)) {
+        groups.set(roomId, {
+          room_id: roomId,
+          room_name: roomName,
+          room_type: roomType,
+          participants: participants,
+          messages: [],
+          latestMessage: message,
+          messageCount: 0,
+          latestTimestamp: message.ts_iso || message.timestamp || new Date().toISOString(),
+        })
+      }
+
+      const group = groups.get(roomId)!
+      group.messages.push(message)
+      group.messageCount = group.messages.length
+
+      // Update latest message if this message is newer
+      const currentTimestamp = new Date(message.ts_iso || message.timestamp || 0).getTime()
+      const latestTimestamp = new Date(group.latestTimestamp).getTime()
+
+      if (currentTimestamp > latestTimestamp) {
+        group.latestMessage = message
+        group.latestTimestamp = message.ts_iso || message.timestamp || new Date().toISOString()
+      }
+    })
+
+    // Sort messages within each conversation chronologically
+    groups.forEach((group) => {
+      group.messages.sort((a, b) => {
+        const aTime = new Date(a.ts_iso || a.timestamp || 0).getTime()
+        const bTime = new Date(b.ts_iso || b.timestamp || 0).getTime()
+        return aTime - bTime
+      })
+    })
+
+    return Array.from(groups.values())
+  }, [chatData])
 
   const handleFileUpload = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
@@ -235,42 +298,76 @@ export default function ChatFilterApp() {
     }
   }, [])
 
-  const filteredMessages = useMemo(() => {
-    let filtered = [...chatData]
+  const downloadConversation = useCallback((conversation: ConversationGroup) => {
+    const conversationContent = `
+Conversation Export
+==================
+
+Room: ${cleanRoomName(conversation.room_name)}
+Room Type: ${conversation.room_type}
+Participants: ${conversation.participants.join(", ")}
+Total Messages: ${conversation.messageCount}
+Date Range: ${formatDate(conversation.messages[0]?.ts_iso || conversation.messages[0]?.timestamp || "")} - ${formatDate(conversation.latestTimestamp)}
+
+Messages:
+=========
+
+${conversation.messages
+  .map(
+    (msg, index) => `
+[${index + 1}] ${formatDate(msg.ts_iso || msg.timestamp || "")} ${formatTime(msg.ts_iso || msg.timestamp || "")}
+From: ${msg.author_user_name || "Unknown User"} (${msg.author_user_email || "No email"})
+Message: ${msg.message || "No message content"}
+`,
+  )
+  .join("\n")}
+
+---
+Exported on: ${new Date().toLocaleString()}
+`.trim()
+
+    const blob = new Blob([conversationContent], { type: "text/plain" })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = url
+    a.download = `conversation-${cleanRoomName(conversation.room_name).replace(/[^a-zA-Z0-9]/g, "_")}-${new Date().toISOString().split("T")[0]}.txt`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  }, [])
+
+  const filteredConversations = useMemo(() => {
+    let filtered = [...conversationGroups]
 
     // Apply tab filter
     if (activeTab === "senders") {
-      const senderMap = new Map<string, ChatMessage>()
-      chatData.forEach((item) => {
-        const senderId = item.author_user_id || item.author_user_name || "unknown"
-        const timestamp = item.ts_iso || item.timestamp || new Date().toISOString()
-        if (!senderMap.has(senderId) || new Date(timestamp) > new Date(senderMap.get(senderId)?.ts_iso || 0)) {
-          senderMap.set(senderId, item)
+      const senderMap = new Map<string, ConversationGroup>()
+      conversationGroups.forEach((conversation) => {
+        const senderId =
+          conversation.latestMessage.author_user_id || conversation.latestMessage.author_user_name || "unknown"
+        const timestamp = conversation.latestTimestamp
+        if (!senderMap.has(senderId) || new Date(timestamp) > new Date(senderMap.get(senderId)?.latestTimestamp || 0)) {
+          senderMap.set(senderId, conversation)
         }
       })
       filtered = Array.from(senderMap.values())
     } else if (activeTab === "rooms") {
-      const roomMap = new Map<string, ChatMessage>()
-      chatData.forEach((item) => {
-        const roomId = item.room_id || item.room_name || "unknown"
-        const timestamp = item.ts_iso || item.timestamp || new Date().toISOString()
-        if (!roomMap.has(roomId) || new Date(timestamp) > new Date(roomMap.get(roomId)?.ts_iso || 0)) {
-          roomMap.set(roomId, item)
-        }
-      })
-      filtered = Array.from(roomMap.values())
+      // Already grouped by rooms, so just use all conversations
+      filtered = conversationGroups
     }
 
     // Apply search filter with debouncing
     if (debouncedSearchTerm) {
       const term = debouncedSearchTerm.toLowerCase()
-      filtered = filtered.filter((item) => {
+      filtered = filtered.filter((conversation) => {
         const searchableText = [
-          item.message,
-          item.author_user_name,
-          item.room_name,
-          item.author_user_email,
-          item.room_type,
+          conversation.room_name,
+          conversation.room_type,
+          conversation.participants.join(" "),
+          ...conversation.messages.map((msg) => msg.message),
+          ...conversation.messages.map((msg) => msg.author_user_name),
+          ...conversation.messages.map((msg) => msg.author_user_email),
         ]
           .filter(Boolean)
           .join(" ")
@@ -281,25 +378,25 @@ export default function ChatFilterApp() {
 
     // Apply room type filter
     if (roomTypeFilter && roomTypeFilter !== "all") {
-      filtered = filtered.filter((item) => item.room_type === roomTypeFilter)
+      filtered = filtered.filter((conversation) => conversation.room_type === roomTypeFilter)
     }
 
     // Apply date filter
     if (dateFilter) {
       const filterDate = new Date(dateFilter)
-      filtered = filtered.filter((item) => {
-        const itemDate = new Date(item.ts_iso || item.timestamp || 0)
-        return itemDate.toDateString() === filterDate.toDateString()
+      filtered = filtered.filter((conversation) => {
+        const conversationDate = new Date(conversation.latestTimestamp)
+        return conversationDate.toDateString() === filterDate.toDateString()
       })
     }
 
-    // Sort by timestamp (newest first)
+    // Sort by latest message timestamp (newest first)
     return filtered.sort((a, b) => {
-      const aTime = new Date(a.ts_iso || a.timestamp || 0).getTime()
-      const bTime = new Date(b.ts_iso || b.timestamp || 0).getTime()
+      const aTime = new Date(a.latestTimestamp).getTime()
+      const bTime = new Date(b.latestTimestamp).getTime()
       return bTime - aTime
     })
-  }, [chatData, activeTab, debouncedSearchTerm, roomTypeFilter, dateFilter])
+  }, [conversationGroups, activeTab, debouncedSearchTerm, roomTypeFilter, dateFilter])
 
   const stats = useMemo(() => {
     const senders = new Set(chatData.map((item) => item.author_user_id || item.author_user_name).filter(Boolean))
@@ -310,16 +407,17 @@ export default function ChatFilterApp() {
       totalMessages: chatData.length,
       totalSenders: senders.size,
       totalRooms: rooms.size,
+      totalConversations: conversationGroups.length,
       roomTypes: Array.from(roomTypes),
-      filteredCount: filteredMessages.length,
+      filteredCount: filteredConversations.length,
     }
-  }, [chatData, filteredMessages])
+  }, [chatData, conversationGroups, filteredConversations])
 
   // Virtual scrolling setup with dynamic height
   const containerHeight = isMobile ? 500 : 600
-  const itemHeight = settings.compactView ? 60 : 80
+  const itemHeight = settings.compactView ? 80 : 100
   const { visibleItems, totalHeight, offsetY, setScrollTop } = useVirtualScrolling(
-    filteredMessages,
+    filteredConversations,
     itemHeight,
     containerHeight,
   )
@@ -384,8 +482,51 @@ export default function ChatFilterApp() {
     }
   }
 
-  const openConversation = useCallback((message: ChatMessage) => {
-    setSelectedConversation(message)
+  const getConversationDisplayName = (conversation: ConversationGroup) => {
+    
+    const roomName = conversation.room_name || ""
+    const roomType = conversation.room_type?.toLowerCase()
+
+    if (roomType === "sms") {
+      // For SMS, extract the phone number from room_name like "LEGACY_SMS [Joshua Lemerman] [+13306053584]"
+      const phoneMatch = roomName.match(/\[(\+\d+)\]/)
+      if (phoneMatch) {
+        return phoneMatch[1] // Return the phone number with +
+      }
+      // Fallback: try to find any phone number pattern
+      const phonePattern = /\+?\d{10,}/
+      const phoneFound = roomName.match(phonePattern)
+      if (phoneFound) {
+        return phoneFound[0]
+      }
+    } else if (roomType === "direct") {
+      // For Direct messages, extract the recipient's name (not the sender)
+      // Format: "Direct [Person1] [Person2]"
+      const nameMatches = roomName.match(/\[([^\]]+)\]/g)
+      if (nameMatches && nameMatches.length >= 2) {
+        // Get the names without brackets
+        const names = nameMatches.map((match) => match.replace(/\[|\]/g, ""))
+
+        // Find the sender's name from the latest message
+        const senderName = conversation.latestMessage.author_user_name
+
+        // Return the name that's NOT the sender
+        const recipientName = names.find((name) => name !== senderName)
+        if (recipientName) {
+          return recipientName
+        }
+
+        // Fallback: return the first name if we can't determine sender
+        return names[0]
+      }
+    }
+
+    // Fallback to cleaned room name for other types or if parsing fails
+    return cleanRoomName(roomName)
+  }
+
+  const openConversation = useCallback((conversation: ConversationGroup) => {
+    setSelectedConversation(conversation)
     setIsModalOpen(true)
     setTimeout(() => {
       if (conversationScrollRef.current) {
@@ -394,24 +535,12 @@ export default function ChatFilterApp() {
     }, 100)
   }, [])
 
-  const conversationMessages = useMemo(() => {
-    if (!selectedConversation) return []
-    const senderId = selectedConversation.author_user_id || selectedConversation.author_user_name
-    return chatData
-      .filter((msg) => (msg.author_user_id || msg.author_user_name) === senderId)
-      .sort((a, b) => {
-        const aTime = new Date(a.ts_iso || a.timestamp || 0).getTime()
-        const bTime = new Date(b.ts_iso || b.timestamp || 0).getTime()
-        return aTime - bTime
-      })
-  }, [chatData, selectedConversation])
-
   const resetApp = useCallback(() => {
     setChatData([])
     setSearchTerm("")
     setRoomTypeFilter("")
     setDateFilter("")
-    setActiveTab("all")
+    setActiveTab("conversations")
     setError(null)
     setSelectedConversation(null)
     setIsModalOpen(false)
@@ -429,7 +558,8 @@ export default function ChatFilterApp() {
       metadata: {
         exportDate: new Date().toISOString(),
         totalMessages: stats.totalMessages,
-        filteredMessages: stats.filteredCount,
+        totalConversations: stats.totalConversations,
+        filteredConversations: stats.filteredCount,
         filters: {
           search: debouncedSearchTerm,
           roomType: roomTypeFilter,
@@ -437,19 +567,19 @@ export default function ChatFilterApp() {
           tab: activeTab,
         },
       },
-      messages: filteredMessages,
+      conversations: filteredConversations,
     }
 
     const blob = new Blob([JSON.stringify(dataToExport, null, 2)], { type: "application/json" })
     const url = URL.createObjectURL(blob)
     const a = document.createElement("a")
     a.href = url
-    a.download = `chat-export-${new Date().toISOString().split("T")[0]}.json`
+    a.download = `chat-conversations-export-${new Date().toISOString().split("T")[0]}.json`
     document.body.appendChild(a)
     a.click()
     document.body.removeChild(a)
     URL.revokeObjectURL(url)
-  }, [filteredMessages, stats, debouncedSearchTerm, roomTypeFilter, dateFilter, activeTab])
+  }, [filteredConversations, stats, debouncedSearchTerm, roomTypeFilter, dateFilter, activeTab])
 
   const handleScroll = useCallback(
     (e: React.UIEvent<HTMLDivElement>) => {
@@ -491,7 +621,9 @@ export default function ChatFilterApp() {
                 <FileText className="w-12 h-12 text-white" />
               </div>
               <h2 className="text-3xl font-bold text-gray-900 mb-3">Chat Data Analyzer</h2>
-              <p className="text-gray-600 mb-8 text-lg">Upload your chat JSON file to explore and analyze messages</p>
+              <p className="text-gray-600 mb-8 text-lg">
+                Upload your chat JSON file to explore and analyze conversations
+              </p>
             </div>
 
             {error && (
@@ -571,7 +703,7 @@ export default function ChatFilterApp() {
             <div className="flex items-center space-x-4">
               <h1 className="text-2xl font-bold">Chat Analyzer</h1>
               <Badge variant="secondary" className="bg-blue-100 text-blue-800">
-                {stats.totalMessages.toLocaleString()} messages
+                {stats.totalConversations.toLocaleString()} conversations
               </Badge>
             </div>
             <div className="flex items-center space-x-2">
@@ -653,8 +785,8 @@ export default function ChatFilterApp() {
               <div className="flex items-center space-x-2">
                 <Users className="w-4 h-4 text-green-500" />
                 <div>
-                  <p className="text-xs text-gray-500">Senders</p>
-                  <p className="font-semibold">{stats.totalSenders}</p>
+                  <p className="text-xs text-gray-500">Conversations</p>
+                  <p className="font-semibold">{stats.totalConversations}</p>
                 </div>
               </div>
             </Card>
@@ -662,8 +794,8 @@ export default function ChatFilterApp() {
               <div className="flex items-center space-x-2">
                 <Hash className="w-4 h-4 text-orange-500" />
                 <div>
-                  <p className="text-xs text-gray-500">Rooms</p>
-                  <p className="font-semibold">{stats.totalRooms}</p>
+                  <p className="text-xs text-gray-500">Participants</p>
+                  <p className="font-semibold">{stats.totalSenders}</p>
                 </div>
               </div>
             </Card>
@@ -686,10 +818,14 @@ export default function ChatFilterApp() {
           >
             <TabsList className="w-full justify-start rounded-none h-auto p-0 bg-transparent">
               <TabsTrigger
-                value="all"
+                value="conversations"
                 className={`rounded-none border-b-2 border-transparent data-[state=active]:border-blue-500 transition-all duration-200 ${settings.darkMode ? "data-[state=active]:bg-gray-700" : "data-[state=active]:bg-blue-50/50"}`}
               >
-                All Messages
+                <MessageSquare className="w-4 h-4 mr-2" />
+                Conversations
+                <Badge variant="secondary" className="ml-2 bg-blue-100 text-blue-800">
+                  {stats.totalConversations}
+                </Badge>
               </TabsTrigger>
               <TabsTrigger
                 value="senders"
@@ -719,7 +855,7 @@ export default function ChatFilterApp() {
                 <div className="relative flex-1">
                   <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4" />
                   <Input
-                    placeholder="Search messages, users, or rooms..."
+                    placeholder="Search conversations, participants, or messages..."
                     value={searchTerm}
                     onChange={(e) => setSearchTerm(e.target.value)}
                     className={`pl-10 pr-10 transition-all duration-200 focus:ring-2 focus:ring-blue-500 ${settings.darkMode ? "bg-gray-700 border-gray-600" : ""}`}
@@ -769,14 +905,14 @@ export default function ChatFilterApp() {
           </div>
 
           <TabsContent value={activeTab} className="m-0">
-            {filteredMessages.length === 0 ? (
+            {filteredConversations.length === 0 ? (
               <div className="text-center py-20">
                 <div
                   className={`w-24 h-24 rounded-full flex items-center justify-center mx-auto mb-6 ${settings.darkMode ? "bg-gray-700" : "bg-gray-100"}`}
                 >
                   <MessageSquare className="w-12 h-12 text-gray-400" />
                 </div>
-                <h3 className="text-xl font-medium mb-3">No messages found</h3>
+                <h3 className="text-xl font-medium mb-3">No conversations found</h3>
                 <p className="text-gray-500 mb-6">Try adjusting your search or filter criteria</p>
                 {(searchTerm || roomTypeFilter || dateFilter) && (
                   <Button
@@ -805,56 +941,50 @@ export default function ChatFilterApp() {
                       transition: "transform 0.05s ease-out",
                     }}
                   >
-                    {visibleItems.map((message) => (
+                    {visibleItems.map((conversation) => (
                       <div
-                        key={`${message.author_user_id || message.author_user_name}-${message.index}`}
+                        key={`${conversation.room_id}-${conversation.index}`}
                         className={`p-4 cursor-pointer transition-all duration-200 border-b active:scale-[0.99] ${
                           settings.darkMode
                             ? "hover:bg-gray-700 border-gray-700 active:bg-gray-600"
                             : "hover:bg-blue-50/50 border-gray-100 active:bg-blue-100/50"
                         }`}
                         style={{ height: `${itemHeight}px` }}
-                        onClick={() => openConversation(message)}
+                        onClick={() => openConversation(conversation)}
                       >
                         <div className="flex items-center space-x-3 h-full">
                           <div className="w-12 h-12 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-white font-semibold text-lg shadow-lg">
-                            {(message.author_user_name || "U")
-                              .split(" ")
-                              .map((n) => n[0])
-                              .join("")
-                              .substring(0, 2)}
+                            {getIconForRoomType(conversation.room_type)}
                           </div>
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center justify-between mb-1">
                               <h3 className="text-sm font-semibold truncate">
-                                {message.author_user_name || "Unknown User"}
+                                {getConversationDisplayName(conversation)}
                               </h3>
                               {settings.showTimestamps && (
                                 <span className="text-xs text-gray-500 whitespace-nowrap ml-2 flex items-center">
                                   <Clock className="w-3 h-3 mr-1" />
-                                  {formatTime(message.ts_iso || message.timestamp || "")}
+                                  {formatTime(conversation.latestTimestamp)}
                                 </span>
                               )}
                             </div>
                             <p className="text-sm text-gray-600 truncate">
                               <span className="font-medium text-blue-600">
-                                {cleanRoomName(message.room_name || "")}:
+                                {conversation.latestMessage.author_user_name || "Unknown"}:
                               </span>{" "}
-                              {message.message || "No message content"}
+                              {conversation.latestMessage.message || "No message content"}
                             </p>
                             <div className="flex items-center space-x-2 mt-1">
-                              {settings.showEmails && message.author_user_email && (
-                                <span className="text-xs text-gray-400 flex items-center">
-                                  <Mail className="w-3 h-3 mr-1" />
-                                  {message.author_user_email}
-                                </span>
-                              )}
-                              <span className="text-xs text-gray-400">
-                                {formatDate(message.ts_iso || message.timestamp || "")}
-                              </span>
-                              {message.room_type && (
+                              <span className="text-xs text-gray-400">{formatDate(conversation.latestTimestamp)}</span>
+                              <Badge variant="outline" className="text-xs">
+                                {conversation.messageCount} messages
+                              </Badge>
+                              <Badge variant="outline" className="text-xs">
+                                {getIconForRoomType(conversation.room_type)} {conversation.room_type}
+                              </Badge>
+                              {conversation.participants.length > 2 && (
                                 <Badge variant="outline" className="text-xs">
-                                  {getIconForRoomType(message.room_type)} {message.room_type}
+                                  {conversation.participants.length} participants
                                 </Badge>
                               )}
                             </div>
@@ -872,7 +1002,7 @@ export default function ChatFilterApp() {
         {/* Enhanced Conversation Modal */}
         <Dialog open={isModalOpen} onOpenChange={setIsModalOpen}>
           <DialogContent
-            className={`${isMobile ? "max-w-full h-full m-0 rounded-none" : "max-w-3xl h-[90vh]"} flex flex-col p-0 ${settings.darkMode ? "bg-gray-800 border-gray-700" : ""}`}
+            className={`${isMobile ? "max-w-full h-full m-0 rounded-none" : "max-w-4xl h-[90vh]"} flex flex-col p-0 ${settings.darkMode ? "bg-gray-800 border-gray-700" : ""}`}
           >
             {selectedConversation && (
               <>
@@ -880,39 +1010,38 @@ export default function ChatFilterApp() {
                   className={`p-4 border-b sticky top-0 z-10 backdrop-blur-sm transition-colors duration-300 ${settings.darkMode ? "border-gray-700 bg-gray-800/90" : "border-gray-200 bg-white/90"}`}
                 >
                   <div className="flex items-center space-x-3">
-                    {isMobile && (
-                      <Button variant="ghost" size="sm" onClick={() => setIsModalOpen(false)} className="p-2">
-                        <ArrowLeft className="w-4 h-4" />
-                      </Button>
-                    )}
+                    <Button variant="ghost" size="sm" onClick={() => setIsModalOpen(false)} className="p-2">
+                      <X className="w-4 h-4" />
+                    </Button>
                     <div className="w-12 h-12 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-white font-semibold shadow-lg">
-                      {(selectedConversation.author_user_name || "U")
-                        .split(" ")
-                        .map((n) => n[0])
-                        .join("")
-                        .substring(0, 2)}
+                      {getIconForRoomType(selectedConversation.room_type)}
                     </div>
                     <div className="flex-1 min-w-0">
                       <DialogTitle className="text-lg font-semibold truncate">
-                        {selectedConversation.author_user_name || "Unknown User"}
+                        {getConversationDisplayName(selectedConversation)}
                       </DialogTitle>
-                      <p className="text-sm text-gray-500 flex items-center">
-                        <Mail className="w-3 h-3 mr-1" />
-                        {selectedConversation.author_user_email || "No email"}
-                      </p>
                     </div>
                     <div className="flex items-center space-x-2">
-                      <Badge variant="secondary">{conversationMessages.length} messages</Badge>
-                      {!isMobile && (
-                        <div className="flex space-x-2">
-                          <Button variant="ghost" size="sm">
-                            <Phone className="w-4 h-4" />
-                          </Button>
-                          <Button variant="ghost" size="sm">
-                            <MoreVertical className="w-4 h-4" />
-                          </Button>
-                        </div>
-                      )}
+                      <Badge variant="secondary">{selectedConversation.messageCount} messages</Badge>
+                      <Badge variant="outline">{selectedConversation.room_type}</Badge>
+                      <div className="flex space-x-2">
+                        <Button variant="ghost" size="sm">
+                          <Phone className="w-4 h-4" />
+                        </Button>
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button variant="ghost" size="sm">
+                              <MoreVertical className="w-4 h-4" />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end">
+                            <DropdownMenuItem onClick={() => downloadConversation(selectedConversation)}>
+                              <Download className="w-4 h-4 mr-2" />
+                              Download Conversation as TXT
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      </div>
                     </div>
                   </div>
                 </DialogHeader>
@@ -923,15 +1052,48 @@ export default function ChatFilterApp() {
                   style={{ scrollBehavior: "smooth" }}
                 >
                   <div className="space-y-4">
-                    {conversationMessages.map((msg, index) => {
+                    {selectedConversation.messages.map((msg, index) => {
                       const showDateSeparator =
                         index === 0 ||
                         formatDate(msg.ts_iso || msg.timestamp || "") !==
                           formatDate(
-                            conversationMessages[index - 1].ts_iso || conversationMessages[index - 1].timestamp || "",
+                            selectedConversation.messages[index - 1].ts_iso ||
+                              selectedConversation.messages[index - 1].timestamp ||
+                              "",
                           )
 
-                      const isOwnMessage = index % 2 === 1 // Simplified logic for demo
+                      // Determine message ownership - use a consistent approach
+                      // For SMS: the user is typically the one whose name appears first in room_name
+                      // For Direct: similar logic applies
+                      const roomName = selectedConversation.room_name || ""
+                      let mainUserName = ""
+
+                      if (selectedConversation.room_type === "sms") {
+                        // Extract the first name from SMS room format: "LEGACY_SMS [Joshua Lemerman] [+13306053584]"
+                        const nameMatch = roomName.match(/LEGACY_SMS \[([^\]]+)\]/)
+                        mainUserName = nameMatch ? nameMatch[1] : ""
+                      } else if (selectedConversation.room_type === "direct") {
+                        // Extract the first name from Direct room format: "Direct [Person1] [Person2]"
+                        const nameMatch = roomName.match(/Direct \[([^\]]+)\]/)
+                        mainUserName = nameMatch ? nameMatch[1] : ""
+                      }
+
+                      // If we couldn't extract from room name, use the most frequent sender
+                      if (!mainUserName) {
+                        const senderCounts = selectedConversation.messages.reduce(
+                          (acc, message) => {
+                            const sender = message.author_user_name || "Unknown"
+                            acc[sender] = (acc[sender] || 0) + 1
+                            return acc
+                          },
+                          {} as Record<string, number>,
+                        )
+                        mainUserName = Object.entries(senderCounts).reduce((a, b) =>
+                          senderCounts[a[0]] > senderCounts[b[0]] ? a : b,
+                        )[0]
+                      }
+
+                      const isOwnMessage = msg.author_user_name === mainUserName
 
                       return (
                         <div key={index} className="animate-in fade-in duration-300">
@@ -945,36 +1107,53 @@ export default function ChatFilterApp() {
                             </div>
                           )}
 
-                          <div className={`flex ${isOwnMessage ? "justify-end" : "justify-start"}`}>
+                          <div className={`flex ${isOwnMessage ? "justify-end" : "justify-start"} mb-3`}>
                             <div
-                              className={`max-w-xs lg:max-w-md px-4 py-3 rounded-2xl shadow-sm transition-all duration-200 hover:shadow-md ${
-                                isOwnMessage
-                                  ? "bg-blue-500 text-white rounded-br-md"
-                                  : settings.darkMode
-                                    ? "bg-gray-700 text-gray-100 rounded-bl-md border border-gray-600"
-                                    : "bg-white text-gray-900 rounded-bl-md border"
-                              }`}
+                              className={`flex ${isOwnMessage ? "flex-row-reverse" : "flex-row"} items-end space-x-2 max-w-[80%]`}
                             >
+                              {/* Avatar for other party only */}
                               {!isOwnMessage && (
-                                <div className="mb-2">
-                                  <p className="text-xs font-semibold text-blue-600 flex items-center">
-                                    <User className="w-3 h-3 mr-1" />
-                                    {msg.author_user_name || "Unknown"}
-                                  </p>
-                                  <p className={`text-xs ${settings.darkMode ? "text-gray-400" : "text-gray-500"}`}>
-                                    {cleanRoomName(msg.room_name || "")}
-                                  </p>
+                                <div className="w-8 h-8 rounded-full bg-gradient-to-br from-gray-400 to-gray-600 flex items-center justify-center text-white text-xs font-semibold flex-shrink-0 mb-1">
+                                  {(msg.author_user_name || "U").charAt(0).toUpperCase()}
                                 </div>
                               )}
-                              <p className="text-sm leading-relaxed break-words">
-                                {msg.message || "No message content"}
-                              </p>
-                              <p
-                                className={`text-xs mt-2 flex items-center ${isOwnMessage ? "text-blue-100" : settings.darkMode ? "text-gray-400" : "text-gray-500"}`}
+
+                              <div
+                                className={`px-4 py-3 rounded-2xl shadow-sm transition-all duration-200 hover:shadow-md ${
+                                  isOwnMessage
+                                    ? "bg-blue-500 text-white rounded-br-md ml-2"
+                                    : settings.darkMode
+                                      ? "bg-gray-700 text-gray-100 rounded-bl-md border border-gray-600 mr-2"
+                                      : "bg-white text-gray-900 rounded-bl-md border border-gray-200 shadow-md mr-2"
+                                }`}
                               >
-                                <Clock className="w-3 h-3 mr-1" />
-                                {formatTime(msg.ts_iso || msg.timestamp || "")}
-                              </p>
+                                {/* Show sender name for other party messages only */}
+                                {!isOwnMessage && (
+                                  <div className="mb-2">
+                                    <p className="text-xs font-semibold text-blue-600 flex items-center">
+                                      <User className="w-3 h-3 mr-1" />
+                                      {msg.author_user_name || "Unknown"}
+                                    </p>
+                                  </div>
+                                )}
+
+                                <p className="text-sm leading-relaxed break-words whitespace-pre-wrap">
+                                  {msg.message || "No message content"}
+                                </p>
+
+                                <p
+                                  className={`text-xs mt-2 flex items-center ${
+                                    isOwnMessage
+                                      ? "text-blue-100 justify-end"
+                                      : settings.darkMode
+                                        ? "text-gray-400"
+                                        : "text-gray-500"
+                                  }`}
+                                >
+                                  <Clock className="w-3 h-3 mr-1" />
+                                  {formatTime(msg.ts_iso || msg.timestamp || "")}
+                                </p>
+                              </div>
                             </div>
                           </div>
                         </div>
