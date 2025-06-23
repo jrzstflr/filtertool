@@ -52,6 +52,7 @@ interface ChatMessage {
   room_type?: "direct" | "sms" | "group" | string
   ts?: number
   ts_iso?: string
+  timestamp?: string
   [key: string]: any // Allow any additional fields
 }
 
@@ -65,13 +66,13 @@ interface AppSettings {
 }
 
 // Virtual scrolling hook with improved performance
-function useVirtualScrolling(items: any[], itemHeight: number, containerHeight: number, buffer = 5) {
+function useVirtualScrolling(items: ChatMessage[], itemHeight: number, containerHeight: number, buffer = 5) {
   const [scrollTop, setScrollTop] = useState(0)
 
   const visibleStart = Math.max(0, Math.floor(scrollTop / itemHeight) - buffer)
   const visibleEnd = Math.min(items.length, Math.ceil((scrollTop + containerHeight) / itemHeight) + buffer)
 
-  const visibleItems = items.slice(visibleStart, visibleEnd).map((item, index) => ({
+  const visibleItems = items.slice(visibleStart, visibleEnd).map((item: ChatMessage, index: number) => ({
     ...item,
     index: visibleStart + index,
   }))
@@ -336,19 +337,6 @@ export default function ChatFilterApp() {
     }
   }
 
-  const getColorForRoomType = (roomType: string) => {
-    switch (roomType?.toLowerCase()) {
-      case "direct":
-        return "bg-green-500"
-      case "sms":
-        return "bg-red-500"
-      case "group":
-        return "bg-blue-500"
-      default:
-        return "bg-gray-500"
-    }
-  }
-
   const cleanRoomName = (roomName: string) => {
     if (!roomName) return "Unknown Room"
     return roomName
@@ -487,7 +475,7 @@ export default function ChatFilterApp() {
         const dt = new DataTransfer()
         dt.items.add(jsonFile)
         fileInputRef.current.files = dt.files
-        handleFileUpload({ target: { files: dt.files } } as any)
+        handleFileUpload({ target: { files: dt.files } } as React.ChangeEvent<HTMLInputElement>)
       }
     },
     [handleFileUpload],
@@ -757,11 +745,13 @@ export default function ChatFilterApp() {
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="all">All Room Types</SelectItem>
-                    {stats.roomTypes.map((type) => (
-                      <SelectItem key={type} value={type}>
-                        {type}
-                      </SelectItem>
-                    ))}
+                    {stats.roomTypes
+                      .filter((type): type is string => typeof type === "string" && type !== undefined)
+                      .map((type) => (
+                        <SelectItem key={type} value={type}>
+                          {type}
+                        </SelectItem>
+                      ))}
                   </SelectContent>
                 </Select>
 
